@@ -1,0 +1,109 @@
+# -*- coding: utf-8 -*-
+"""
+Simulación puntos 1, 2 y 3 - Modelo RCAM
+
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.integrate import solve_ivp
+import math
+
+def xdot(X, U):
+    """Modelo dinámico del avión RCAM (simplificado, 10 pasos del enunciado)."""
+    X = np.asarray(X, dtype=float).flatten()
+    U = np.asarray(U, dtype=float).flatten()
+    u, v, w, p, q, r, phi, theta, psi = X
+    da, de, dr, T1, T2 = U
+
+    # --- Parámetros base ---
+    m = 80000.0
+    g = 9.81
+    rho = 1.225
+    S, St, cbar, lt = 122.6, 32.0, 4.3, 17.5
+
+    # --- 1. Saturación ---
+    da = np.clip(da, -25*np.pi/180, 25*np.pi/180)
+    de = np.clip(de, -25*np.pi/180, 10*np.pi/180)
+    dr = np.clip(dr, -30*np.pi/180, 30*np.pi/180)
+    T1 = np.clip(T1, 0.5*np.pi/180, 10*np.pi/180)
+    T2 = np.clip(T2, 0.5*np.pi/180, 10*np.pi/180)
+
+    # --- 2. Variables intermedias ---
+    Va = max(np.sqrt(u**2 + v**2 + w**2), 1e-6)
+    alpha = np.arctan2(w, u)
+    beta = np.arcsin(np.clip(v/Va, -1, 1))
+    Q = 0.5 * rho * Va**2
+    wb = np.array([p, q, r]); Vb = np.array([u, v, w])
+
+    # --- 3. Coeficientes ---
+    alpha_0 = np.deg2rad(-11.5)
+    n, a3, a2, a1, a0 = 5.5, -768.5, 609.2, -155.2, 15.212
+    dE = 0.25
+    CL_wb = n*(alpha - alpha_0) if alpha <= np.deg2rad(14.5) else a3*alpha**3 + a2*alpha**2 + a1*alpha + a0
+    eps = dE*(alpha - alpha_0)
+    CL_t = 3.1*(St/S)*(alpha - eps + de + (1.3*q*lt/Va))
+    CL = CL_wb + CL_t
+    CD = 0.13 + 0.07*((5.5*alpha + 0.654)**2)
+    CY = -16*beta + 0.24*dr
+
+    # --- 4. Fuerzas ---
+    FA_S = np.array([[-CD*Q*S], [CY*Q*S], [-CL*Q*S]])
+    Cb = np.array([[math.cos(alpha), 0, -math.sin(alpha)], [0,1,0],[math.sin(alpha),0,math.cos(alpha)]])
+    FA_b = Cb @ FA_S
+
+    # --- 5. Momentos ---
+    n_bar = np.array([[-1.4*beta], [-0.59 - 3.1*((St*lt)/(S*cbar))*(alpha - eps)], [(1 - (alpha*180/(15*np.pi)))*beta]])
+    dCm_dx = cbar/Va*np.array([[-11,0,5],[0,-4.03*(St*(lt**2)/(S*cbar**2)),0],[1.7,0,-11.5*beta]])
+    dCm_du = np.array([[-0.6,0,0.22],[0,-3.1*((St*lt)/(S*cbar)),0],[0,0,-0.63]])
+    Uv = np.array([[da],[de],[dr]])
+    CMac_b = n_bar + dCm_dx @ wb.reshape(3,1) + dCm_du @ Uv
+    MAac_b = CMac_b * Q * S * cbar
+
+    rcg, rac = np.array([0.23*cbar,0,0.1*cbar]), np.array([0.12*cbar,0,0])
+    MAcg_b = MAac_b + np.cross(FA_b.flatten(), (rcg - rac)).reshape(3,1)
+
+    # --- 6. Propulsión y gravedad ---
+    Fp = np.array([[ (T1+T2)*m*g ], [0], [0]])
+    mu1, mu2 = np.array([0.23*cbar,7.94,0.1*cbar-1.9]), np.array([0.23*cbar,-7.94,0.1*cbar-1.9])
+    Mp = (np.cross(mu1, [T1*m*g,0,0]) + np.cross(mu2, [T2*m*g,0,0])).reshape(3,1)
+    Fg = m*np.array([[-g*math.sin(theta)], [g*math.cos(theta)*math.sin(phi)], [g*math.cos(theta)*math.cos(phi)]])
+
+    # --- 7. Dinámica y cinemática ---
+    F_b = FA_b + Fp + Fg
+    duvw = (F_b.flatten()/m) - np.cross(wb, Vb)
+    I_geo = np.array([[40.07,0,-2.098],[0,64,0],[-2.098,0,99.92]])
+    I_b = m*I_geo; Iinv = np.linalg.inv(I_b)
+    Mtot = MAcg_b + Mp
+    dpqr = (Iinv @ (Mtot - np.cross(wb, I_b @ wb).reshape(3,1))).flatten()
+    Te = np.array([[1, math.sin(phi)*math.tan(theta), math.cos(phi)*math.tan(theta)],
+                   [0, math.cos(phi), -math.sin(phi)],
+                   [0, math.sin(phi)/math.cos(theta), math.cos(phi)/math.cos(theta)]])
+    dangles = (Te @ wb).flatten()
+    return np.concatenate([duvw, dpqr, dangles])
+
+def plot_states(sol, title):
+    labels = ["u","v","w","p","q","r","phi","theta","psi"]
+    plt.figure(figsize=(12,8))
+    for i in range(9):
+        plt.subplot(3,3,i+1)
+        plt.plot(sol.t, sol.y[i]); plt.title(labels[i]); plt.grid(True)
+    plt.suptitle(title); plt.tight_layout(); plt.show()
+
+def control_const(t): return np.array([0.0, -0.1, 0.0, 0.08, 0.08])
+def control_aileron(t):
+    da = 0.0873 if 30<=t<=32 else 0
+    return np.array([da,-0.1,0,0.08,0.08])
+
+def make_wrapper(ctrl): return lambda t,X: xdot(X, ctrl(t))
+
+# ---------- PUNTO 2 ----------
+print("Punto 2: Dinámica base con control constante")
+X0 = np.array([85,0,0,0,0,0,0,0.1,0])
+sol2 = solve_ivp(make_wrapper(control_const),(0,3600),X0,t_eval=np.arange(0,3600,180))
+plot_states(sol2,"PUNTO 2 - Vuelo sin perturbaciones")
+
+# ---------- PUNTO 3 ----------
+print("Punto 3: Deflexión de alerones +5° por 2s (t=30-32s)")
+sol3 = solve_ivp(make_wrapper(control_aileron),(0,200),X0,t_eval=np.linspace(0,200,300))
+plot_states(sol3,"PUNTO 3 - Respuesta a alerones +5°")
