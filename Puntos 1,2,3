@@ -1,8 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-Simulación puntos 1, 2 y 3 - Modelo RCAM
 
-"""
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -87,7 +83,7 @@ def plot_states(sol, title):
     plt.figure(figsize=(12,8))
     for i in range(9):
         plt.subplot(3,3,i+1)
-        plt.plot(sol.t, sol.y[i]); plt.title(labels[i]); plt.grid(True)
+        plt.plot(sol.t, sol.y[i], color='darkgreen'); plt.title(labels[i]); plt.grid(True)
     plt.suptitle(title); plt.tight_layout(); plt.show()
 
 def control_const(t): return np.array([0.0, -0.1, 0.0, 0.08, 0.08])
